@@ -1,0 +1,367 @@
+---
+title: "Práctica 2 - Tipología ciclo de vida de los datos"
+author: "Pau Ortí y Alexander Almendral"
+date: "08/06/2021"
+output:
+  pdf_document: 
+    toc: yes
+  html_document:
+    toc: yes
+#bibliography: scholar.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+# Instalación de los paquetes (si es necesario)
+if(!require("osmdata")) install.packages("osmdata")
+if(!require("tidyverse")) install.packages("tidyverse")
+if(!require("sf")) install.packages("sf")
+if(!require("ggmap")) install.packages("ggmap")
+if(!require("gridExtra")) install.packages("gridExtra")
+if(!require("outliers")) install.packages("outliers")
+if(!require("leaps")) install.packages("leaps")
+if(!require("rcompanion")) install.packages("rcompanion")
+if(!require("correlation")) install.packages("correlation")
+if(!require("flextable")) install.packages("flextable")
+if(!require("factoextra")) install.packages("factoextra")
+if(!require("VIM")) install.packages("VIM")
+
+#carga de los paquetes
+library(knitr)
+library(ggplot2)
+library(car)
+library(tidyverse)
+library(osmdata)
+library(sf)
+library(ggmap)
+library(OpenStreetMap)
+library(gridExtra)
+library(nortest)
+library(outliers)
+library(quantreg)
+library(rcompanion)
+library(VIM)
+library(correlation)
+library(factoextra)
+library(flextable)
+```
+
+
+# Descripción del dataset
+
+## Explicación del dataset y sus variables 
+
+El dataset california houseing prices nos da información sobre el habitatge de los distintos distritos que se encontraban en el estado de California (Estados Unidos) en 1990, los datos se han extraídos del censo oficial del estado. Cada fila del dataset representa un distrito concreto el cual consta de las siguientes variables:
+
+*  **longitude**: dato numérico. Nos da información de la ubicación del distrito.
+*  **latitude**: dato numérico. Nos da información de la ubicación del distrito.
+*  **housing_median_age**: dato numérico. Edad mediana de la población de dentro del distrito.
+*  **total_rooms**: dato numérico. Número total de habitaciones dentro del distrito.
+*  **total_bedrooms**: dato numérico. Número total de dormitorios dentro del distrito.
+*  **population**: dato numérico. Número total de individuos residiendo dentro del distrito.
+*  **households**: dato numérico. Número total de hogares dentro del distrito.
+*  **median_income**: dato numérico. Mediana de los ingresos por hogar dentro del distrito.
+*  **median_house_value**: dato numérico. Mediana del valor del habitaje dentro del distrito.
+*  **ocean_proximity**: dato categórico. Proximidad del distrito respecto al océano, con cuatro posibles valores: `"NEAR BAY"`, `"<1H OCEAN"`, `"INLAND"`, `"ISLAND"` y `"NEW OCEAN"`.
+
+##Qué pregunta se pretende responder
+
+Se pretende entender cuáles son las variables que más influyen en el precio del habitaje por distritos, y estudiar qué relación tienen estas respecto al precio final de las casas en la costa oeste de los estados unidos. Por lo tanto, escogeremos la variable `median_house_value`, que nos da información sobre el valor medio del habitatge por distrito, como variable explicada, y el resto como variables explicativas.  
+  
+## Carga de los datos
+
+Empezamos inicializando dos variables donde guardaremos, en una la versión original de los datos (data_original), tal y como los hemos importado del csv, y en la otra (data) guardaremos los datos que iremos modificando a lo largo de la práctica.
+
+
+```{r}
+# Cargamos los datos
+data_original <- read.csv('Data/housing.csv')
+data <- read.csv('Data/housing.csv')
+head(data)
+```
+
+```{r, results='hide', message=F}
+# Obtiene el mapa de California
+map <- get_map(getbb("California"), maptype = "toner-background")
+cali_map <- ggmap(map)
+geo_data <- data[,c("longitude","latitude")]
+```
+
+```{r}
+# Muestra el mapa de california con las localizaciones de las viviendas
+cali_map +
+  geom_point(data = geo_data, mapping = aes(x = longitude, y = latitude), 
+             color = "red",size=0.1)
+
+```
+
+# Integración y selección de los datos de interés a analizar
+
+```{r}
+dim(data)
+str(data)
+```
+
+Observamos que todas las variables del conjunto de datos corresponden a variables cuantitativas discretas excepto la variable `ocean_proximity`, la cual es cualitativa de tipo factor.
+
+# Limpieza de los datos
+
+## Valores nulos 
+
+Empezamos a analizar nuestra única variable categórica, la variable `ocean_proximity`.
+
+```{r}
+# Tabla de frecuencias de ocean_proximity
+table(data$ocean_proximity)
+```
+
+Vemos como esta está compuesta por 4 categorias diferentes. El resultado de la tabla de frecuencias no muestra ninguna categoría "vacía" que contenga valores, por lo que no tenemos valores nulos en esta variable. Finalmente la convertimos a tipo factor.
+
+```{r}
+# Convertimos a factor
+data$ocean_proximity <- factor(data$ocean_proximity)
+```
+
+A continuación comprobamos también la existencia de valores nulos en las otras variables:
+
+```{r}
+# Comprobamos la existencia de datos perdidos
+sapply(data, function(x) sum(is.na(x)))
+```
+
+Observamos que sólamente hay 207 datos nulos, todos pertenecen a la variable `total_bedrooms.` La cantidad de datos núlos es mínima teniendo en cuenta que conjunto de datos contiene más de 20.000 registros, sin embargo, optamos por imputar los valores perdidos utilizando el algoritmo *knn-means*, para calcular la distancia Euclediana para la computación de los valores perdidos de la variable `total_bedrooms`, utilizaremos aquellas variables que presenten una correlación más alta con los valores de esta variable. Empezamos imprimiendo la correlación de los valores respecto a la variable `total_bedrooms`.
+
+```{r}
+data_na_removed <- data[is.na(data$total_bedrooms) == FALSE, 1:9]
+sort(cor(data_na_removed)[,'total_bedrooms'], decreasing = TRUE)
+```
+
+Observamos que las variables que presentan una correlación mayor son `households`, `total_rooms` and `population`. Por lo tanto, vamos a dejar que nuestro algoritmo **knn-means** calcule la distancia Euclediana con estas tres variables y después impute los valores perdidos de nuestra variable total_rooms.
+
+```{r}
+data$total_bedrooms <- kNN(data[,c('total_bedrooms','households', 'total_rooms', 'population')])$total_bedrooms
+```
+
+Comprobamos la existencia de datos perdidos
+```{r}
+sapply(data, function(x) sum(is.na(x)))
+```
+
+
+## Valores extremos
+
+Para detectar outliers nos vamos a centrar en tres variables en concreto: `median_house_value`, `median_income`, `housing_median_age` y `population`.
+
+```{r}
+par(mfrow=c(2,2))
+hist(scale(data$median_house_value), main="median_house_value")
+boxplot(scale(data$median_income), main="median_income")
+hist(scale(data$housing_median_age), main="housing_median_age")
+plot(scale(data$population), main="population")
+```
+
+Observamos que todas las variables representadas en el gráfico tienen valores extremos. Por un lado, la variable `median_house_value` consta de más de 1000 valores por encima de las 2 desviaciones estándares, las otras variables presentan características similares. En este caso decidimos dejar los valores extremos o *outliers* tal y como se nos presentan en el conjunto de datos, ya que corresponden a valores reales y normales de la población estudiada, son comunes y no son fruto de errores. 
+
+
+# Análisis de los datos
+
+A continuación realizaremos diversos análisis, tales como test de hipótesis, análisis de componentes principales, regresión cuantil y análisis de correlaciones.
+
+## Estudio de la distribución de `median_house_value`
+
+El primer paso en el análisis de los datos es estudiar la distribución de la variable de interés `median_house_value`, sobre la cual se comprobará la normalidad y homogeneidad de la varianza. Para ello visualizaremos la distribución de la variable mediante un gráfico de densidad y un Q-Q plot.
+
+```{r}
+library(ggplot2)
+ggplot(data, aes(x = median_house_value)) + geom_density()
+qqPlot(data$median_house_value)
+```
+
+Mediante el Q-Q plot ya podemos apreciar que la distribución de la variable `median_house_value` no sigue una distribución normal. Este gráfico nos sugiere que los residuos siguen una distribución normal en cuantiles cercanos a cero, no obstante, para cuantiles en las colas se observa una tendencia muy elevada que nos podría indicar que los datos presentan más valores extremos de los esperados en una distribución normal.
+
+Finalmente, para comprobar la normalidad de los datos mediante un test de hipotesis, utilizaremos el test de normalidad de Lilliefors (Kolmogorov-Smirnov), el cual rechaza firmemente la hipótesis nula de normalidad indicandonos así que la variable `median_house_value` no es normal.
+
+```{r}
+lillie.test(data$median_house_value) 
+```
+
+
+## Comparación del precio según `ocean_proximity`
+
+Otra variable que nos interesa estudiar es `ocean_proximity`, que nos servirá para comparar los precios de las viviendas según su proximidad al oceano. Para ello se estudia primero el gráfico de densidad y el diagrama de caja `median_house_value` según las diferentes categorías de `ocean_proximity`.
+
+
+```{r}
+ggplot(data, aes(x=median_house_value, fill=ocean_proximity)) + geom_density(alpha=0.25)
+# Boxplot de
+ggplot(data, aes(x=ocean_proximity, y=median_house_value, color=ocean_proximity)) +
+  geom_boxplot()
+```
+
+
+Observamos en el gráfico de densidad de los distintos grupos dentro de la variable `ocean_proximity` respecto a la variable `median_house_value` que las categorías `"<1H OCEAN"`, `"NEAR BAY"` y `"NEAR OCEAN"`, no parecen mostrar diferencias significativas respeco a la distribución de precios en estas areas. Del mismo modo, en el diagrama de caja se no se aprecian diferencias entre las categorías ya observadas en el gráfico de densidad. 
+
+
+Ahora debemos decidir que test aplicar sobre los datos ya que, como se ha observado anteriormente, la distribuión de `median_house_value` no sigue una distribución normal. Al aplicar un test de normalidad sobre cada una de las categorías observamos que únicamente sigue una distribución normal la categoría `"ISLAND"`. También aplicamos un test de Levene para comprobar la homogeneidad de las variancias según las categorías de `ocean_proximity` que da como resultado una clara heterocedasticidad de las varianzas.
+
+
+```{r}
+# Test de normalidad del precio por categorias
+tapply(data$median_house_value,data$ocean_proximity,lillie.test) 
+# Levene's test with multiple independent variables
+leveneTest(median_house_value ~ ocean_proximity, data = data)
+```
+
+
+Posteriormente vamos a corraborar esta primera impresión con el test de suma de rangos de Kruskal-Wallis, el cual es un test no paramétrico y donde, sobre la hipotesis nula, se prueba si los las diferentes categorías son iguales o pertenecen a la misma población.
+
+Posteriormente calculamos las diferentes comparaciones, mediante el test de comparaciones múltiples de suma de rangos de Wilcoxon, entre la media del precio de la viviendas en cada una de las categorías. Aplicamos la correción de Bonferroni para ajustar el error provocado por las múltiples comparaciones.
+
+
+```{r}
+# Kruskal Wallis Test One Way Anova by Ranks
+kruskal.test(data$median_house_value~data$ocean_proximity)
+pairwise.wilcox.test(data$median_house_value, data$ocean_proximity, p.adjust.method = "bonferroni")
+```
+
+## Análisis de componentes principales (PCA)
+
+Realizamos un análisis de componentes principales con tal de buscar las componentes que son combinación lineal unitaria de las variables seleccionadas, es decir, todas las variables numéricas excepto la variable de interés `median_house_price`.
+
+Para ello, primeramente seleccionamos las variables necesarias y calculamos la matriz de covarianzas  $S$ y correlaciones  $R$ de las diferentes variables.
+
+```{r}
+# Seleccionamos las variables numéricas
+data_cp <- data[,1:8]
+# Matriz de covarianzas
+S <- cov(data_cp)
+# Matriz de correlaciones
+R <- cor(data_cp)
+```
+ 
+A continuación aplicamos el método de analisis de componentes principales partiendo de cada una de las matrices:
+ 
+```{r} 
+cpcov = princomp(covmat = S) # componentes principales saliendo de S
+cpcor = princomp(covmat = R) # componentes principales saliendo de R
+summary(cpcov, loading=T) # loading = TRUE añade los vectores própios
+summary(cpcor, loading=T) 
+```
+
+Podemos observar que las componentes principales partiendo de la matriu de covarianzas son muy diferentes
+a si partimos de la matriz de correlaciones, es decir, obtenemos desviaciones típicas y vectores propios muy diferentes. Para nuestro análisis partiremos de la matriz de covarianzas. En el gráfico siguiente se observa el porcentaje de variable explicado por cada componente principal, claramente, más de un 95% de la variable la explica un único componente principal.
+ 
+ 
+```{r} 
+data_cp = as.matrix(data_cp)
+fviz_eig(cpcov)
+cpdata = cpcor$loading[,1]
+# Multiplicamos veps por los datos
+cp = data_cp %*% cpdata
+```
+
+
+ 
+## Análisis de regresión
+
+Pasamos a hacer un análisis de regresión, especificamente un análisis de regresión cuantil. Debido a la gran cantidad de valores extremos que se recogen en la mayoría de variables, las suposiciones de normalidad y homocedasticidad del modelo lineal no se cumplían, por lo que un análisis de regresión por cuantiles nos permitirá estudiar el efecto de las diferentes variables regresoras sobre la distribución de la variable respuesta `median_house_price` a través de los cuantiles de ésta.
+
+
+```{r, warning=F}
+# Modelo reg cuantil con todas las variables y todos los cuantiles
+model <- rq(median_house_value ~ housing_median_age + total_rooms + total_bedrooms +
+              population + households + median_income + ocean_proximity, 
+            data = data, tau = 1:9/10) 
+# Modelo reg cuantil con todas las variables para la mediana
+model_Med <- rq(median_house_value ~ housing_median_age + total_rooms + total_bedrooms +
+              population + households + median_income + ocean_proximity, 
+            data = data, tau = 0.5)
+
+# Pseudo-R squared de Nagelkerke
+nagelkerke(model_Med)[[2]][3,1]
+
+ggplot(data[data$ocean_proximity=="INLAND",], aes(median_income,median_house_value)) + 
+  geom_point() + 
+  geom_quantile(quantiles = 1:9/10)
+```
+
+Se observa un valor del coeficiente Pseudo-$R^2$ relativamente alto, con un valor de 0.68. En la gráfica siguiente observamos la variación de la coordenada en el orígen y de los coeficientes de las variables del modelo según los diferentes cuantiles de la variable respuesta `median_house_price`.
+
+```{r, fig.height=8}
+plot(model, mar = c(5.1, 4.1, 2.1, 2.1), xlab = "tau", 
+  ylab = "income coefficient", cex = 1, pch = 19)
+```
+
+## Análisis de correlaciones
+
+Pasamos a realizar un análisis de correlaciones entre las variables numéricas del conjunto de datos. Primeramente mostramos en el siguiente panel el coeficiente de correlación entre las variables:
+
+```{r , warning=F, message=F}
+# Correlation panel
+panel.cor <- function(x, y){
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- round(cor(x, y), digits=2)
+    txt <- paste0("R = ", r)
+    cex.cor <- 0.8/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+# Customize upper panel
+upper.panel<-function(x, y){
+  #points(x,y, cex = 1,  col = "#00AFBB")
+  points(x,y,panel = panel.smooth, cex = 1.0,
+    pch = 18, bg = "light blue", cex.labels = 2, font.labels = 2, col = "#00AFBB")
+}
+  
+
+pairs(data[,c(3:9)], 
+      lower.panel = panel.cor,
+      upper.panel = upper.panel)
+```
+
+
+Observamos en el panel inferior de correlaciones, donde observamos que las variables más correlacionadas entre si son: `total_rooms` y `total_bedrooms`, `total_bedrooms` y `households`, y `households` con `population`, todas ellas tiene un índice de correlación por encima de 0.90. Respecto a la variable que nos interesa, `median_house_value`, la variable más correlacionada es `median_income`, con una correlación de 0.69. 
+
+Mediante el paquete `correlation` podemos realizar un analisis de correlaciones directamente como se muestra a continuación
+
+```{r, echo='asis'}
+# tabla del analisis de correlaciones
+results <- correlation(data[,3:9])
+results
+```
+
+# Representación de los resultados y resolución del problema
+
+En primer lugar, en cuanto a las comparaciones múltiples sobre el precio del habitaje según las diferentes localizaciones de estos se observan diferencias significativas, con un nivel de confianza del 95%, entre la media del precio del habitaje de `"INLAND"` y `"NEAR_BAY"` con `"<1H OCEAN"`; tambien entre `"NEAR_OCEAN"` y `"NEAR_BAY"` con `"INLAND"`; aunque menos significativa, existe tambien diferencia entre `"NEAR_OCEAN"` y `"NEAR_BAY"`.
+
+En segundo lugar, en cuanto al análisis de componentes principales, se observa que una única componente principal podría explicar más del 95% de la variancia.
+
+En tercer lugar, en cuanto al a la regresión cuantil, se puede apreciar en el gráfico obtenido que los coeficientes $\beta_o$ y $\beta_i$, donde $i$ son las diferentes variables estudiadas, varian mucho según en que cuantil de la distribución de la variable respuesta se esté analizando. En el caso de `housing_median_age`, `total_bedrooms`, `median_income`, y las categorías `"NEAR_OCEAN"` y `"NEAR_OCEAN"` con respecto a la categoria de referencia `"<1H OCEAN"`, se produce un incremento en el coeficiente a medida que aumentamos de cuantil; en caso contrario, los coeficientes de las variables `total_rooms`, `population`, y la categoria `"ISLAND"` con respecto a la de referencia, presentan una disminución. Como destacable observamos el incremento del coeficiente de `household` hasta el cuantil del 80% y la gran disminución de este en el cuantil del 90%.
+
+
+En cuarto y último lugar, en cuanto al análisis de correlaciones se observa que casi todos los tests de hipotesis para el coeficiente de correlación dan como resultado un valor *P* < .001, siendo significativos con un nivel de significación del 95%. Los coeficientes que no son significativos, es decir los que serían 0, son para las variables `median_income` con `tota_bedrooms`, `households` y `population`, con valores *P* > .05.
+
+
+
+
+
+Enlace Github:
+
+https://github.com/AlexanderAlmendral/PRA2-California-House-Prices
+
+```{r, warning=F}
+ft_firma = flextable(
+  data.frame(Contribuciones = c("Investigación previa",
+                                "Redacción de las respuestas", "Desarrollo código"),
+             Firma = c("Alexander Almendral, Pau Ortí", 
+                       "Alexander Almendral, Pau Ortí",
+                       "Alexander Almendral, Pau Ortí")))
+ft_firma = autofit(ft_firma)
+ft_firma
+```
+
+
+
